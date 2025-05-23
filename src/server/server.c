@@ -20,7 +20,7 @@ void get_time_prefix(char *buffer, size_t size){
              millis);
 }
 
-void start_server(int argc, char **argv) {
+int start_server(int argc, char **argv) {
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <port> <rootdir>\n", argv[0]);
         exit(1);
@@ -42,6 +42,8 @@ void start_server(int argc, char **argv) {
         fprintf(stderr, "server: %s is not directory\n", root_dir);
         exit(1);
     }
+
+    strncat(root_dir, "/", sizeof(root_dir));
 
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof(hints));
@@ -77,22 +79,58 @@ void start_server(int argc, char **argv) {
 
     struct sockaddr_in *sin = (struct sockaddr_in *)res->ai_addr;
 
-    char ip_str[INET_ADDRSTRLEN];
-    inet_ntop(res->ai_family, &sin->sin_addr, ip_str, sizeof(ip_str));
-
     char buf[32];
     get_time_prefix(buf, sizeof(buf));
-
-    printf("%s server listeting on %s:%d\n", buf, ip_str, htons(sin->sin_port));
+    printf("%s server listeting on %s:%d\n", buf, inet_ntoa(sin->sin_addr), htons(sin->sin_port));
 
     freeaddrinfo(res);
+
+    return sfd;
 }
 
 void main_worker(int sfd) {
     client_s clients[MAX_COUNT_CLIENTS];
     pthread_t thread;
     pthread_attr_t pattr;
+    struct sockaddr_in sin;
+    socklen_t len = sizeof(sin);
+    char buffer[PATH_MAX];
 
     pthread_attr_init(&pattr);
     pthread_attr_setdetachstate(&pattr, PTHREAD_CREATE_DETACHED);
+
+    while (1) {
+        int cfd = accept(sfd, (struct sockaddr *)&sin, &len);
+        if (cfd == -1) continue;
+
+        int m = -1;
+        for (int i = 0; i < MAX_COUNT_CLIENTS; i++) {
+            if (clients[i].active == 0) {
+                m = i;
+                break;
+            }
+        }
+
+        if (m == -1) {
+            strcpy(buffer, "SERVER IS BUSY\n");
+            send(cfd, buffer, strlen(buffer), 0);
+            close(cfd);
+            continue;
+        }
+
+        clients[m].active = 1;
+        clients[m].sfd = cfd;
+        strcpy(clients[m].work_dir, root_dir);
+
+        int ret = pthread_create(&thread, &pattr, client_worker, &clients[m]);
+        if (ret != 0) {
+            perror("server: pthread_create");
+            clients[m].active = 0;
+            close(cfd);
+        }
+    }
+}
+
+void* client_worker(void* arg) {
+    client_s *client = (client_s *)arg;
 }

@@ -27,7 +27,8 @@ typedef struct {
 } client_s;
 
 void get_time_prefix(char *buffer, size_t size);
-void start_server(int argc, char **argv);
+int start_server(int argc, char **argv);
 void main_worker(int sfd);
+void* client_worker(void* arg);
 
 #endif //SERVER_H
