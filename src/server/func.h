@@ -15,6 +15,8 @@
 #include <dirent.h>
 #include <unistd.h>
 
+#define BUFFER_SIZE 4096
+
 extern char info[];
 extern char root_dir[PATH_MAX];
 extern size_t root_dir_len;
@@ -26,4 +28,4 @@ int cd_cmd(int sfd, char *cmd, char *work_dir);
 int list_cmd(int sfd, char *cmd, char *work_dir);
 int unknown_cmd(int sfd, char *cmd);
 
-#endif FNCH_H
+#endif //FUNC_H

@@ -18,13 +18,13 @@
 typedef struct {
     int active;
     int sfd;
-    char work_dir[PATH_MAX + 1];
+    char work_dir[PATH_MAX];
 } client_s;
 
 void get_time_prefix(char *buffer, size_t size);
-int start_server(int argc, char **argv);
-void main_worker(int sfd);
-void* client_worker(void *arg);
+void start_server(int argc, char **argv);
+void main_worker();
+void *client_worker(void *arg);
 void client_close(client_s *client, struct sockaddr_in *sin, int how);
 void int_handler(int signo);
 

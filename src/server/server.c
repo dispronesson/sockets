@@ -1,5 +1,6 @@
 #include "server.h"
 
+int sfd;
 client_s clients[MAX_COUNT_CLIENTS];
 char root_dir[PATH_MAX];
 size_t root_dir_len;
@@ -23,7 +24,7 @@ void get_time_prefix(char *buffer, size_t size){
              millis);
 }
 
-int start_server(int argc, char **argv) {
+void start_server(int argc, char **argv) {
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <port> <rootdir>\n", argv[0]);
         exit(1);
@@ -52,7 +53,6 @@ int start_server(int argc, char **argv) {
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = 0;
     hints.ai_flags = AI_PASSIVE;
 
     int err = getaddrinfo("localhost", argv[1], &hints, &res);
@@ -61,9 +61,10 @@ int start_server(int argc, char **argv) {
         exit(1);
     }
 
-    int sfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    sfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (sfd == -1) {
         perror("server: socket");
+        freeaddrinfo(res);
         exit(1);
     }
 
@@ -72,12 +73,14 @@ int start_server(int argc, char **argv) {
 
     if (bind(sfd, res->ai_addr, res->ai_addrlen) != 0) {
         perror("server: bind");
+        freeaddrinfo(res);
         close(sfd);
         exit(1);
     }
 
     if (listen(sfd, SOMAXCONN) != 0) {
         perror("server: listen");
+        freeaddrinfo(res);
         close(sfd);
         exit(1);
     }
@@ -101,13 +104,13 @@ int start_server(int argc, char **argv) {
     sa.sa_handler = int_handler;
     sigaction(SIGINT, &sa, NULL);
 
-    return sfd;
+    main_worker();
 }
 
-void main_worker(int sfd) {
+void main_worker() {
     pthread_t thread;
     pthread_attr_t tattr;
-    char buffer[PATH_MAX];
+    char buffer[BUFFER_SIZE];
 
     pthread_attr_init(&tattr);
     pthread_attr_setdetachstate(&tattr, PTHREAD_CREATE_DETACHED);
@@ -126,7 +129,7 @@ void main_worker(int sfd) {
 
         if (m == -1) {
             strcpy(buffer, "SERVER IS BUSY");
-            send(cfd, buffer, strlen(buffer) + 1, 0);
+            send(cfd, buffer, strlen(buffer), 0);
             close(cfd);
             continue;
         }
@@ -145,39 +148,39 @@ void main_worker(int sfd) {
     }
 }
 
-void* client_worker(void *arg) {
+void *client_worker(void *arg) {
     pthread_sigmask(SIG_BLOCK, &set, NULL);
     client_s *client = (client_s *)arg;
-    int sfd = client->sfd;
-    char buffer[PATH_MAX];
+    char buffer[BUFFER_SIZE];
     struct sockaddr_in sin;
     socklen_t len = sizeof(sin);
-    off_t offset = 0;
+    off_t offset;
     int res;
 
-    getpeername(sfd, (struct sockaddr *)&sin, &len);
+    getpeername(client->sfd, (struct sockaddr *)&sin, &len);
     get_time_prefix(buffer, sizeof(buffer));
     printf("%s client %s:%d connected to the server\n", buffer, inet_ntoa(sin.sin_addr), ntohs(sin.sin_port));
 
-    send(sfd, info, strlen(info) + 1, 0);
+    send(client->sfd, info, strlen(info), 0);
     if (errno == EPIPE) client_close(client, &sin, UNEXPECTED_CLOSE);
 
     while (1) {
-        if (recv(sfd, buffer, sizeof(buffer), 0) == 0) client_close(client, &sin, UNEXPECTED_CLOSE);
+        ssize_t bytes = recv(client->sfd, buffer, sizeof(buffer) - 1, 0);
+        if (bytes == 0) client_close(client, &sin, UNEXPECTED_CLOSE);
+        buffer[bytes] = '\0';
 
+        offset = 0;
         while (buffer[offset] == ' ') offset++;
 
-        if (strncmp(buffer + offset, "INFO", 4) == 0) res = info_cmd(sfd, buffer + offset);
-        else if (strncmp(buffer + offset, "QUIT", 4) == 0) res = quit_cmd(sfd, buffer + offset);
-        else if (strncmp(buffer + offset, "ECHO", 4) == 0) res = echo_cmd(sfd, buffer + offset);
-        else if (strncmp(buffer + offset, "CD", 2) == 0) res = cd_cmd(sfd, buffer + offset, client->work_dir);
-        else if (strncmp(buffer + offset, "LIST", 4) == 0) res = list_cmd(sfd, buffer + offset, client->work_dir);
-        else res = unknown_cmd(sfd, buffer + offset);
+        if (strncmp(buffer + offset, "INFO", 4) == 0) res = info_cmd(client->sfd, buffer + offset);
+        else if (strncmp(buffer + offset, "QUIT", 4) == 0) res = quit_cmd(client->sfd, buffer + offset);
+        else if (strncmp(buffer + offset, "ECHO", 4) == 0) res = echo_cmd(client->sfd, buffer + offset);
+        else if (strncmp(buffer + offset, "CD", 2) == 0) res = cd_cmd(client->sfd, buffer + offset, client->work_dir);
+        else if (strncmp(buffer + offset, "LIST", 4) == 0) res = list_cmd(client->sfd, buffer + offset, client->work_dir);
+        else res = unknown_cmd(client->sfd, buffer + offset);
 
         if (res == 1) client_close(client, &sin, UNEXPECTED_CLOSE);
         if (res == 2) client_close(client, &sin, NORMAL_CLOSE);
-
-        offset = 0;
     }
 }
 
@@ -199,11 +202,14 @@ void client_close(client_s *client, struct sockaddr_in *sin, int how) {
 }
 
 void int_handler(int signo) {
-    for (int i = 0; i < MAX_COUNT_CLIENTS; i++) close(clients[i].sfd);
+    for (int i = 0; i < MAX_COUNT_CLIENTS; i++) {
+        if (clients[i].active) close(clients[i].sfd);
+    }
+    close(sfd);
 
     char buffer[32];
     get_time_prefix(buffer, sizeof(buffer));
-    printf("%s server has been shut down\n", buffer);
+    printf("\n%s server has been shut down\n", buffer);
 
     exit(0);
 }
